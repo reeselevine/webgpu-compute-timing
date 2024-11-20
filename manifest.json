@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "WebGPU Timestamp Capture",
+  "version": "1.0",
+  "description": "Intercept WebGPU calls to capture GPUDevice and add timestamp queries.",
+  "permissions": ["scripting", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
+
