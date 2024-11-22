@@ -49,43 +49,67 @@
         this.timestampQueries = [];
       }
 
+      var timestampWrites;
+      var internalTimestampWrites;
+      if (descriptor.timestampWrites) {
+        internalTimestampWrites = false;
+        timestampWrites = descriptor.timestampWrites;
+      } else {
+        internalTimestampWrites = true;
+        timestampWrites = {
+          querySet: gpuDevice.createQuerySet({
+            type: "timestamp",
+            count: 2
+          }),
+          beginningOfPassWriteIndex: 0,
+          endOfPassWriteIndex: 1
+        };
+      }
+
       // Create the query set and buffers
-      const querySet = gpuDevice.createQuerySet({
-        type: "timestamp",
-        count: 2, // Adjust as needed for number of queries
-      });
       const queryBuffer = gpuDevice.createBuffer({
         label: "Query Resolve Buffer",
-        size: 2 * 8, // Enough for 2 timestamps (8 bytes each)
+        size: 264, // Enough for 2 timestamps (8 bytes each, each starting at a multiple of 256)
         usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+        //mappedAtCreation: true
       });
+
+      // For debugging:
+      //const mappedQueryBuffer = new BigInt64Array(queryBuffer.getMappedRange());
+      //mappedQueryBuffer[0] = 0n;
+      //mappedQueryBuffer[1] = 32n;
+      //queryBuffer.unmap();
+
       const stagingBuffer = gpuDevice.createBuffer({
         label: "Staging Buffer for Timestamp Results",
         size: 2 * 8, // Same size as the query buffer
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        //mappedAtCreation: true
       });
+
+      //const mappedArray = new BigInt64Array(stagingBuffer.getMappedRange());
+      //mappedArray[0] = 0n;
+      //mappedArray[1] = 42n;
+      //stagingBuffer.unmap();
+
 
       const updatedDescriptor = {
         ...descriptor,
-        timestampWrites: {
-          querySet: querySet,
-          beginningOfPassWriteIndex: 0,
-          endOfPassWriteIndex: 1,
-        },
+        timestampWrites
       };
 
       computePass = originalBeginComputePass.call(this, updatedDescriptor);
       computePass.end = () => {
         let entryPoint = computePassEntryPoints.get(computePass) || "unknown";
         this.timestampQueries.push({
-          "querySet": querySet,
+          "timestampWrites" : timestampWrites,
           "queryBuffer": queryBuffer,
           "stagingBuffer": stagingBuffer,
-          "entryPoint": entryPoint
+          "entryPoint": entryPoint,
+          "internalTimestampWrites": internalTimestampWrites
         });
         return originalEndComputePass.call(computePass);
       }
-
       return computePass;
     };
 
@@ -96,13 +120,15 @@
       if (this.timestampQueries != undefined) {
         // resolve all timestamp queries
         for (const timestampQuery of this.timestampQueries) {
-          this.resolveQuerySet(timestampQuery.querySet, 0, 2, timestampQuery.queryBuffer, 0);
-          this.copyBufferToBuffer(timestampQuery.queryBuffer, 0, timestampQuery.stagingBuffer, 0, 16);
+          const timestampWrites = timestampQuery.timestampWrites;
+          this.resolveQuerySet(timestampWrites.querySet, timestampWrites.beginningOfPassWriteIndex, 1, timestampQuery.queryBuffer, 0);
+          this.resolveQuerySet(timestampWrites.querySet, timestampWrites.endOfPassWriteIndex, 1, timestampQuery.queryBuffer, 256);
+          this.copyBufferToBuffer(timestampQuery.queryBuffer, 0, timestampQuery.stagingBuffer, 0, 8);
+          this.copyBufferToBuffer(timestampQuery.queryBuffer, 256, timestampQuery.stagingBuffer, 8, 8);
         }
       }
       const commandBuffer = originalFinish.apply(this, args);
       commandBuffer.timestampQueries = this.timestampQueries;
-
       return commandBuffer;
     };
 
@@ -125,7 +151,9 @@
               });
 
               timestampQuery.stagingBuffer.unmap();
-              timestampQuery.querySet.destroy();
+              if (timestampQuery.internalTimestampWrites) {
+                timestampQuery.timestampWrites.querySet.destroy();
+              }
               timestampQuery.queryBuffer.destroy();
               timestampQuery.stagingBuffer.destroy();
 
